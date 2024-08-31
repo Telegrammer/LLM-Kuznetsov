@@ -1,18 +1,26 @@
 import enum
+import random
+
+import torch
 
 from AbstractLinearNetwork import *
 from TorchLinearNetwork import TorchLinearNetwork
 
 
+class PositionalEmbeddingTopology(enum.IntEnum):
+    max_length = 0
+    token_dims = 1
+
+
 class PositionalEmbedding(nn.Module):
     def __init__(self, device: str, topology: tuple[int]):
         super(PositionalEmbedding, self).__init__()
-        self.__values = torch.arange(0, topology[EncoderTopology.token_count]).unsqueeze(0).T
-        self.__values = self.__values.expand(topology[EncoderTopology.token_count],
-                                             topology[EncoderTopology.token_dims])
+        self.__values = torch.arange(0, topology[PositionalEmbeddingTopology.max_length]).unsqueeze(0).T
+        self.__values = self.__values.expand(topology[PositionalEmbeddingTopology.max_length],
+                                             topology[PositionalEmbeddingTopology.token_dims])
 
-        idx = torch.arange(0, topology[EncoderTopology.token_dims])
-        idx = torch.full(idx.shape, 10000) ** (2 * idx / topology[EncoderTopology.token_dims])
+        idx = torch.arange(0, topology[PositionalEmbeddingTopology.token_dims])
+        idx = torch.full(idx.shape, 10000) ** (2 * idx / topology[PositionalEmbeddingTopology.token_dims])
 
         self.__values = torch.div(self.__values, idx)
         sin_pos = torch.sin(self.__values[:, ::2])
@@ -31,260 +39,204 @@ class PositionalEmbedding(nn.Module):
 
 
 class EncoderTopology(enum.IntEnum):
-    token_count = 0
-    token_dims = 1
-    heads_count = 2
-
-
-class EncoderAttentionWrapper(nn.Module):
-    def __init__(self):
-        nn.Module.__init__(self)
-
-    @staticmethod
-    def forward(attention_layer: nn.MultiheadAttention, input_tensor: [torch.Tensor, torch.LongTensor]) -> \
-            [torch.Tensor, np.ndarray]:
-        query: torch.Tensor = input_tensor.detach().clone()
-        key: torch.Tensor = input_tensor.detach().clone()
-        value: torch.Tensor = input_tensor.detach().clone()
-        out: torch.Tensor = attention_layer(query, key, value)
-        return out
+    token_dims = 0
+    heads_count = 1
 
 
 class Encoder(AbstractLinearNetwork):
 
-    def __init__(self, topology: tuple[int], embedding_layers: tuple[nn.Module]):
+    def __init__(self, topology: tuple[int]):
         AbstractLinearNetwork.__init__(self, topology)
-        self.__layers = nn.ModuleDict()
-        self.__layers.add_module("embedding_layer", embedding_layers[0])
-        self.__layers.add_module("positional_embedding_layer", embedding_layers[1])
 
-        self.__layers.add_module("encoder_attention_wrapper", EncoderAttentionWrapper())
-        self.__layers.add_module("attention_layer",
-                                 nn.MultiheadAttention(self._topology[EncoderTopology.token_dims],
-                                                       self._topology[EncoderTopology.heads_count] - self._topology[
-                                                           EncoderTopology.token_dims] % self._topology[
-                                                           EncoderTopology.heads_count]))
+        self._layers.add_module("attention_layer",
+                                nn.MultiheadAttention(self._topology[EncoderTopology.token_dims],
+                                                      self._topology[EncoderTopology.heads_count] - self._topology[
+                                                          EncoderTopology.token_dims] % self._topology[
+                                                          EncoderTopology.heads_count]))
 
-        self.__layers.add_module("attention_layernorm_layer", nn.LayerNorm(self._topology[EncoderTopology.token_dims]))
+        self._layers.add_module("attention_layernorm_layer", nn.LayerNorm(self._topology[EncoderTopology.token_dims]))
 
-        self.__layers.add_module("feed_forward_layer",
-                                 TorchLinearNetwork((self._topology[EncoderTopology.token_dims],
-                                                     self._topology[EncoderTopology.token_dims] * 4,
-                                                     self._topology[EncoderTopology.token_dims])))
+        self._layers.add_module("feed_forward_layer",
+                                TorchLinearNetwork((self._topology[EncoderTopology.token_dims],
+                                                    self._topology[EncoderTopology.token_dims] * 4,
+                                                    self._topology[EncoderTopology.token_dims])))
 
-        self.__layers.add_module("forward_layernorm_layer", nn.LayerNorm(self._topology[EncoderTopology.token_dims]))
+        self._layers.add_module("forward_layernorm_layer", nn.LayerNorm(self._topology[EncoderTopology.token_dims]))
 
     def forward(self, input_tensor: [torch.Tensor, torch.LongTensor]) -> [torch.Tensor, np.ndarray]:
         out: torch.Tensor = input_tensor.detach().clone()
-        out = self.__layers["embedding_layer"](out)
-        out += self.__layers["positional_embedding_layer"](input_tensor.size(dim=0))
-
         # multi head attention
 
-        attention_out: torch.Tensor = self.__layers["encoder_attention_wrapper"](self.__layers["attention_layer"], out)
+        attention_out: torch.Tensor = self._layers["attention_layer"](out, out, out)
 
         # add & norm
-        out += attention_out[0]
-        out = self.__layers["attention_layernorm_layer"](out)
+        out += attention_out[0].detach()
+        out = self._layers["attention_layernorm_layer"](out)
 
         feed_forward_out: torch.Tensor = out.detach().clone()
 
         # forward
-        feed_forward_out = self.__layers["feed_forward_layer"](feed_forward_out)
+        feed_forward_out = self._layers["feed_forward_layer"](feed_forward_out)
 
         # add & norm
         out += feed_forward_out
-        out = self.__layers["forward_layernorm_layer"](out)
-
+        out = self._layers["forward_layernorm_layer"](out)
+        torch.cuda.empty_cache()
         return out
 
     def __repr__(self):
-        return [matrix.__str__() for matrix in list(self.__layers["attention_layer"].parameters())]
+        return list(self._layers["feed_forward_layer"].parameters())
 
 
 class DecoderTopology(enum.IntEnum):
-    token_count = 0
-    token_dims = 1
-    heads_count = 2
+    token_dims = 0
+    heads_count = 1
 
 
-class DecoderAttentionWrapper(nn.Module):
-    def __init__(self):
-        nn.Module.__init__(self)
+class Decoder(AbstractLinearNetwork):
+    def __init__(self, topology: tuple[int]):
+        AbstractLinearNetwork.__init__(self, topology)
 
-    @staticmethod
-    def forward(attention_layer: nn.MultiheadAttention, encoder_tensor: torch.Tensor,
-                input_tensor: [torch.Tensor, torch.LongTensor], device: str) -> \
-            [torch.Tensor, np.ndarray]:
-        query: torch.Tensor = input_tensor.detach().clone()
-        key: torch.Tensor = encoder_tensor.detach().clone()
-        value: torch.Tensor = encoder_tensor.detach().clone()
-        if encoder_tensor is input_tensor:
-            attn_mask = (torch.triu(torch.ones(input_tensor.size(dim=0), encoder_tensor.size(dim=0))) == 1).to(device)
-            attn_mask = attn_mask.float().masked_fill(attn_mask == 0, float('-inf')).masked_fill(attn_mask == 1,
-                                                                                                 float(0.0))
-            out: torch.Tensor = attention_layer(query, key, value, attn_mask=attn_mask)
-        else:
-            out: torch.Tensor = attention_layer(query, key, value)
+        self._layers.add_module("masked_attention_layer",
+                                nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
+                                                      self._topology[DecoderTopology.heads_count]
+                                                      - self._topology[DecoderTopology.token_dims]
+                                                      % self._topology[DecoderTopology.heads_count])
+                                )
 
-        return out
+        self._layers.add_module("masked_attention_layernorm_layer",
+                                nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
 
+        self._layers.add_module("attention_layer",
+                                nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
+                                                      self._topology[DecoderTopology.heads_count]
+                                                      - self._topology[DecoderTopology.token_dims]
+                                                      % self._topology[DecoderTopology.heads_count])
+                                )
 
-class Decoder(nn.Module):
-    def __init__(self, topology: tuple[int], bag_size: int, embedding_layers: tuple[nn.Module]):
-        nn.Module.__init__(self)
-        self._topology = topology
-        self.__layers = nn.ModuleDict()
-        self.__layers.add_module("embedding_layer", embedding_layers[0])
-        self.__layers.add_module("positional_embedding_layer", embedding_layers[1])
+        self._layers.add_module("attention_layernorm_layer",
+                                nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
 
-        self.__layers.add_module("decoder_masked_attention_wrapper", DecoderAttentionWrapper())
-        self.__layers.add_module("masked_attention_layer",
-                                 nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
-                                                       self._topology[DecoderTopology.heads_count]
-                                                       - self._topology[DecoderTopology.token_dims]
-                                                       % self._topology[DecoderTopology.heads_count])
-                                 )
+        self._layers.add_module("feed_forward_layer",
+                                TorchLinearNetwork((self._topology[EncoderTopology.token_dims],
+                                                    self._topology[EncoderTopology.token_dims] * 4,
+                                                    self._topology[EncoderTopology.token_dims]))
+                                )
 
-        self.__layers.add_module("attention_layernorm_layer", nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
-
-        self.__layers.add_module("decoder_attention_wrapper", DecoderAttentionWrapper())
-        self.__layers.add_module("attention_layer",
-                                 nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
-                                                       self._topology[DecoderTopology.heads_count]
-                                                       - self._topology[DecoderTopology.token_dims]
-                                                       % self._topology[DecoderTopology.heads_count])
-                                 )
-
-        self.__layers.add_module("feed_forward_layer",
-                                 TorchLinearNetwork((self._topology[EncoderTopology.token_dims],
-                                                     self._topology[EncoderTopology.token_dims] * 4,
-                                                     self._topology[EncoderTopology.token_dims]))
-                                 )
-
-        self.__layers.add_module("forward_layernorm_layer", nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
-        self.__layers.add_module("linear_layer",
-                                 nn.Linear(self._topology[DecoderTopology.token_dims], bag_size))
+        self._layers.add_module("forward_layernorm_layer", nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
 
     def forward(self, encoder_tensor: torch.tensor, input_tensor: [torch.tensor, torch.LongTensor], device: str) -> \
             tuple[list, torch.Tensor]:
         out: torch.Tensor = input_tensor.detach().clone()
-        out = self.__layers["embedding_layer"](out)
-        lol = self.__layers["positional_embedding_layer"](self._topology[DecoderTopology.token_count])
-        out += lol
 
         # masked multi head attention
 
-        attention_out: torch.Tensor = self.__layers["decoder_masked_attention_wrapper"](
-            self.__layers["masked_attention_layer"], out, out, device)
+        attn_mask = (torch.triu(torch.ones(out.size(dim=0), out.size(dim=0))) == 1).to(device)
+        attn_mask = attn_mask.float().masked_fill(attn_mask == 0, float('-inf')).masked_fill(attn_mask == 1,
+                                                                                             float(0.0))
+        attention_out: torch.Tensor = self._layers["masked_attention_layer"](out, out, out, attn_mask=attn_mask)
 
         # add & norm
 
-        out += attention_out[0]
-        out = self.__layers["attention_layernorm_layer"](out)
+        out += attention_out[0].detach()
+        out = self._layers["masked_attention_layernorm_layer"](out)
 
         # multi head attention
 
-        attention_out: torch.Tensor = self.__layers["decoder_attention_wrapper"](
-            self.__layers["attention_layer"], encoder_tensor, out, device)
-        # print(attention_out[0][-1])
+        attention_out: torch.Tensor = self._layers["attention_layer"](out, encoder_tensor, encoder_tensor)
+
         # add & norm
-        out += attention_out[0]
-        out = self.__layers["attention_layernorm_layer"](out)
+        out += attention_out[0].detach()
+        out = self._layers["attention_layernorm_layer"](out)
 
         # forward
-        feed_forward_out = self.__layers["feed_forward_layer"](out)
+        feed_forward_out = self._layers["feed_forward_layer"](out)
 
         # add & norm
         out += feed_forward_out
-        out = self.__layers["forward_layernorm_layer"](out)
-
-        # print(torch.sum(torch.abs(out)))
-        # linear
-        predict = out[-1].detach().clone()
-        predict = self.__layers["linear_layer"](predict)
-        predict = nn.functional.softmax(predict)
-        out_word = torch.argmax(predict)
-
-        self._topology = tuple(
-            [self._topology[DecoderTopology.token_count] + 1]
-            + list(self._topology[DecoderTopology.token_dims:])
-        )
-
-        return predict, out_word
-
-    def reset(self):
-        self._topology = tuple([1] + list(self._topology[1:]))
+        out = self._layers["forward_layernorm_layer"](out)
+        return out
 
     def __repr__(self):
-        return list(self.__layers["linear_layer"].parameters())
+        return list(self._layers["feed_forward_layer"].parameters())
 
 
 class TransformerTopology(enum.IntEnum):
     encoder_count = 0
     decoder_count = 1
     bag_size = 2
-    response_length = 3
-    input_token_count = 4
+    token_dims = 3
+    response_length = 4
+    input_token_count = 5
 
 
-class Transformer(nn.Module):
+class Transformer(AbstractLinearNetwork):
 
-    def __init__(self, device: str, topology: dict):
-        nn.Module.__init__(self)
-        self.__layers = nn.ModuleDict()
+    def __init__(self, device: str, topology: tuple[int], encoder_heads_count: int, decoder_heads_count: int):
+        AbstractLinearNetwork.__init__(self, topology)
+        self._layers = nn.ModuleDict()
         self.__device = device
-        self.__response_length = topology["self"][TransformerTopology.response_length]
-        self.__input_token_count = topology["self"][TransformerTopology.input_token_count]
-        self._topology = topology["self"][:TransformerTopology.response_length]
+        self.__response_length = topology[TransformerTopology.response_length]
+        self.__input_token_count = topology[TransformerTopology.input_token_count]
+        self._topology = topology[:TransformerTopology.token_dims]
 
-        self._encoder_embedding_layer = nn.Embedding(topology["encoder"][EncoderTopology.token_count],
-                                                     topology["encoder"][EncoderTopology.token_dims])
-        self._decoder_embedding_layer = nn.Embedding(topology["encoder"][EncoderTopology.token_count],
-                                                     topology["encoder"][EncoderTopology.token_dims])
+        self.__encoder_embedding_layer = nn.Embedding(topology[TransformerTopology.bag_size],
+                                                      topology[TransformerTopology.token_dims])
+        self.__decoder_embedding_layer = nn.Embedding(topology[TransformerTopology.bag_size],
+                                                      topology[TransformerTopology.token_dims])
 
-        self._encoder_position_embedding_layer = PositionalEmbedding(self.__device, (
-            self.__input_token_count,
-            topology["encoder"][EncoderTopology.token_dims]))
+        self.__encoder_position_embedding_layer = PositionalEmbedding(self.__device, (
+            self.__input_token_count, topology[TransformerTopology.token_dims]))
 
-        self._decoder_position_embedding_layer = PositionalEmbedding(self.__device, (
-            self.__response_length,
-            topology["encoder"][EncoderTopology.token_dims]))
+        self.__decoder_position_embedding_layer = PositionalEmbedding(self.__device, (
+            self.__response_length, topology[TransformerTopology.token_dims]))
 
-        for i in range(topology["self"][TransformerTopology.encoder_count]):
-            self.__layers.add_module(f"encoder", Encoder(topology["encoder"],
-                                                         (self._encoder_embedding_layer,
-                                                          self._encoder_position_embedding_layer)))
-            # for i in range(topology["self"][TransformerTopology.decoder_count]):
-            self.__layers.add_module(f"decoder", Decoder(topology["decoder"],
-                                                         topology["self"][TransformerTopology.bag_size],
-                                                         (self._decoder_embedding_layer,
-                                                          self._decoder_position_embedding_layer)))
+        self.__logits_layer = nn.Linear(topology[TransformerTopology.token_dims],
+                                        topology[TransformerTopology.bag_size])
 
-    def forward(self, input_tensor: [torch.Tensor, torch.LongTensor]) -> [torch.Tensor, np.ndarray]:
-        encoder_out = input_tensor.detach().clone()
-        # for i in range(self._topology[TransformerTopology.encoder_count]):
-        encoder_out = self.__layers[f"encoder"](encoder_out)
+        for i in range(topology[TransformerTopology.encoder_count]):
+            self._layers.add_module(f"encoder_{i + 1}",
+                                    Encoder((topology[TransformerTopology.token_dims], encoder_heads_count)))
+        for i in range(topology[TransformerTopology.decoder_count]):
+            self._layers.add_module(f"decoder_{i + 1}",
+                                    Decoder((topology[TransformerTopology.token_dims], decoder_heads_count)))
 
-        result_string = torch.LongTensor([self._topology[TransformerTopology.bag_size] - 2]).to(
+    def forward(self, input_tensor: torch.LongTensor) -> torch.Tensor:
+        encoders_out: torch.LongTensor = input_tensor.detach().clone()
+        encoders_out: torch.Tensor = self.__encoder_embedding_layer(encoders_out)
+        encoders_out += self.__encoder_position_embedding_layer(encoders_out.size(dim=0))
+        for i in range(self._topology[TransformerTopology.encoder_count]):
+            encoders_out = self._layers[f"encoder_{i + 1}"](encoders_out)
+
+        result_string = torch.LongTensor([input_tensor[-1].item()]).to(
             self.__device)
 
-        model_logits = torch.Tensor().to(self.__device)
+        model_predict = torch.Tensor().to(self.__device)
 
+        generated_token_count = 0
         while result_string[-1].item() != self._topology[TransformerTopology.bag_size] - 1 and \
-                result_string.size(0) != self.__response_length + 1:
-            logits, out_idx = self.__layers[f"decoder"](encoder_out, result_string, self.__device)
+                generated_token_count != self.__response_length:
+            decoders_out: torch.Tensor = self.__decoder_embedding_layer(result_string)
+            decoders_out += self.__decoder_position_embedding_layer(decoders_out.size(dim=0))
+            for i in range(self._topology[TransformerTopology.decoder_count]):
+                decoders_out = self._layers[f"decoder_{i + 1}"](encoders_out, decoders_out, self.__device)
 
-            logits = logits[None, :]  # add dimension for cat
-            model_logits = torch.cat((model_logits, logits))
+            logits = decoders_out[-1].detach().clone()
+            logits = self.__logits_layer(logits)
+            logits = logits / 2.0
+
+            probabilities = nn.functional.softmax(logits)
+            out_idx = torch.argmax(probabilities)
+
+            probabilities = probabilities[None, :]  # add dimension for cat
+            model_predict = torch.cat((model_predict, probabilities))
             result_string = torch.cat((result_string, torch.Tensor([out_idx]).to(self.__device)), dim=0).long()
+            generated_token_count += 1
 
-        self.__layers["decoder"].reset()
-
-        return model_logits, result_string
+        return model_predict, result_string
 
     def set_response_length(self, value: int):
         self.__response_length = value
 
     def __repr__(self):
-        return self.__layers["decoder"].__repr__()
+        return self._layers["decoder_1"].__repr__()

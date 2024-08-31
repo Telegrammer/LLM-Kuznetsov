@@ -12,7 +12,8 @@ class AbstractLinearNetwork(ABC, nn.Module):
     def __init__(self, topology: tuple[int]):
         nn.Module.__init__(self)
         self._topology = topology
+        self._layers = nn.ModuleDict()
 
     @abstractmethod
-    def forward(self, input_tensor) -> [torch.Tensor, np.ndarray]:
+    def forward(self, **kwargs) -> [torch.Tensor, np.ndarray]:
         pass
