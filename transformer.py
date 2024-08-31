@@ -1,7 +1,4 @@
 import enum
-import random
-
-import torch
 
 from AbstractLinearNetwork import *
 from TorchLinearNetwork import TorchLinearNetwork
@@ -67,16 +64,16 @@ class Encoder(AbstractLinearNetwork):
         out: torch.Tensor = input_tensor.detach().clone()
         # multi head attention
 
-        attention_out: torch.Tensor = self._layers["attention_layer"](out, out, out)
-
+        attention_in: torch.Tensor = out.detach().clone()
+        attention_out: torch.Tensor = self._layers["attention_layer"](attention_in, attention_in, attention_in)
         # add & norm
-        out += attention_out[0].detach()
+        out += attention_out[0]
         out = self._layers["attention_layernorm_layer"](out)
 
-        feed_forward_out: torch.Tensor = out.detach().clone()
+        feed_forward_in: torch.Tensor = out.detach().clone()
 
         # forward
-        feed_forward_out = self._layers["feed_forward_layer"](feed_forward_out)
+        feed_forward_out = self._layers["feed_forward_layer"](feed_forward_in)
 
         # add & norm
         out += feed_forward_out
@@ -85,7 +82,7 @@ class Encoder(AbstractLinearNetwork):
         return out
 
     def __repr__(self):
-        return list(self._layers["feed_forward_layer"].parameters())
+        return list(self._layers["attention_layer"].parameters())
 
 
 class DecoderTopology(enum.IntEnum):
@@ -134,23 +131,26 @@ class Decoder(AbstractLinearNetwork):
         attn_mask = (torch.triu(torch.ones(out.size(dim=0), out.size(dim=0))) == 1).to(device)
         attn_mask = attn_mask.float().masked_fill(attn_mask == 0, float('-inf')).masked_fill(attn_mask == 1,
                                                                                              float(0.0))
-        attention_out: torch.Tensor = self._layers["masked_attention_layer"](out, out, out, attn_mask=attn_mask)
+        attention_in: torch.Tensor() = input_tensor.detach().clone()
+        attention_out: torch.Tensor = self._layers["masked_attention_layer"](attention_in, attention_in, attention_in,
+                                                                             attn_mask=attn_mask)
 
         # add & norm
 
-        out += attention_out[0].detach()
+        out += attention_out[0]
         out = self._layers["masked_attention_layernorm_layer"](out)
 
         # multi head attention
-
-        attention_out: torch.Tensor = self._layers["attention_layer"](out, encoder_tensor, encoder_tensor)
+        attention_in: torch.Tensor() = input_tensor.detach().clone()
+        attention_out: torch.Tensor = self._layers["attention_layer"](attention_in, encoder_tensor, encoder_tensor)
 
         # add & norm
-        out += attention_out[0].detach()
+        out += attention_out[0]
         out = self._layers["attention_layernorm_layer"](out)
 
         # forward
-        feed_forward_out = self._layers["feed_forward_layer"](out)
+        feed_forward_in: torch.Tensor = out.detach().clone()
+        feed_forward_out = self._layers["feed_forward_layer"](feed_forward_in)
 
         # add & norm
         out += feed_forward_out
@@ -158,7 +158,7 @@ class Decoder(AbstractLinearNetwork):
         return out
 
     def __repr__(self):
-        return list(self._layers["feed_forward_layer"].parameters())
+        return list(self._layers["forward_layernorm_layer"].parameters())
 
 
 class TransformerTopology(enum.IntEnum):
@@ -180,34 +180,33 @@ class Transformer(AbstractLinearNetwork):
         self.__input_token_count = topology[TransformerTopology.input_token_count]
         self._topology = topology[:TransformerTopology.token_dims]
 
-        self.__encoder_embedding_layer = nn.Embedding(topology[TransformerTopology.bag_size],
-                                                      topology[TransformerTopology.token_dims])
-        self.__decoder_embedding_layer = nn.Embedding(topology[TransformerTopology.bag_size],
-                                                      topology[TransformerTopology.token_dims])
-
-        self.__encoder_position_embedding_layer = PositionalEmbedding(self.__device, (
-            self.__input_token_count, topology[TransformerTopology.token_dims]))
-
-        self.__decoder_position_embedding_layer = PositionalEmbedding(self.__device, (
-            self.__response_length, topology[TransformerTopology.token_dims]))
-
-        self.__logits_layer = nn.Linear(topology[TransformerTopology.token_dims],
-                                        topology[TransformerTopology.bag_size])
-
+        self._layers.add_module("encoder_embedding_layer", nn.Embedding(topology[TransformerTopology.bag_size],
+                                                                        topology[TransformerTopology.token_dims]))
+        self._layers.add_module("encoder_position_embedding_layer",
+                                PositionalEmbedding(device, (self.__input_token_count,
+                                                             topology[TransformerTopology.token_dims])))
         for i in range(topology[TransformerTopology.encoder_count]):
             self._layers.add_module(f"encoder_{i + 1}",
                                     Encoder((topology[TransformerTopology.token_dims], encoder_heads_count)))
+
+        self._layers.add_module("decoder_embedding_layer", nn.Embedding(topology[TransformerTopology.bag_size],
+                                                                        topology[TransformerTopology.token_dims]))
+        self._layers.add_module("decoder_position_embedding_layer",
+                                PositionalEmbedding(device, (self.__response_length,
+                                                             topology[TransformerTopology.token_dims])))
         for i in range(topology[TransformerTopology.decoder_count]):
             self._layers.add_module(f"decoder_{i + 1}",
                                     Decoder((topology[TransformerTopology.token_dims], decoder_heads_count)))
+        self._layers.add_module("linear_layer", nn.Linear(topology[TransformerTopology.token_dims],
+                                                          topology[TransformerTopology.bag_size]))
 
     def forward(self, input_tensor: torch.LongTensor) -> torch.Tensor:
         encoders_out: torch.LongTensor = input_tensor.detach().clone()
-        encoders_out: torch.Tensor = self.__encoder_embedding_layer(encoders_out)
-        encoders_out += self.__encoder_position_embedding_layer(encoders_out.size(dim=0))
+        encoders_out: torch.Tensor = self._layers["encoder_embedding_layer"](encoders_out)
+        encoders_out += self._layers["encoder_position_embedding_layer"](encoders_out.size(dim=0))
         for i in range(self._topology[TransformerTopology.encoder_count]):
             encoders_out = self._layers[f"encoder_{i + 1}"](encoders_out)
-
+        return encoders_out, 1
         result_string = torch.LongTensor([input_tensor[-1].item()]).to(
             self.__device)
 
@@ -216,17 +215,14 @@ class Transformer(AbstractLinearNetwork):
         generated_token_count = 0
         while result_string[-1].item() != self._topology[TransformerTopology.bag_size] - 1 and \
                 generated_token_count != self.__response_length:
-            decoders_out: torch.Tensor = self.__decoder_embedding_layer(result_string)
-            decoders_out += self.__decoder_position_embedding_layer(decoders_out.size(dim=0))
+            decoders_out: torch.Tensor = self._layers["decoder_embedding_layer"](result_string)
+            decoders_out += self._layers["decoder_position_embedding_layer"](decoders_out.size(dim=0))
             for i in range(self._topology[TransformerTopology.decoder_count]):
                 decoders_out = self._layers[f"decoder_{i + 1}"](encoders_out, decoders_out, self.__device)
-
-            logits = decoders_out[-1].detach().clone()
-            logits = self.__logits_layer(logits)
-            logits = logits / 2.0
-
+            logits = self._layers["linear_layer"](decoders_out)
             probabilities = nn.functional.softmax(logits)
             out_idx = torch.argmax(probabilities)
+            return decoders_out, out_idx
 
             probabilities = probabilities[None, :]  # add dimension for cat
             model_predict = torch.cat((model_predict, probabilities))
@@ -239,4 +235,4 @@ class Transformer(AbstractLinearNetwork):
         self.__response_length = value
 
     def __repr__(self):
-        return self._layers["decoder_1"].__repr__()
+        return self._layers["encoder_1"].__repr__()
