@@ -1,2 +1,2 @@
-from .mnist_loader import *
-from .MNISTDataset import *
+from .TransformerTextDataset import *
+from .TransformerTextLoader import *

@@ -5,11 +5,12 @@ __all__ = ["TorchLinearNetwork"]
 
 class TorchLinearNetwork(AbstractLinearNetwork, nn.Module):
 
-    def __init__(self, topology: tuple[int], activation_function='relu', result_activation_function='softmax'):
+    def __init__(self, topology: tuple[int], activation_function='gelu'):
         AbstractLinearNetwork.__init__(self, topology)
 
         self.__activations = {
             'relu': nn.ReLU(),
+            'gelu': nn.GELU(approximate="tanh"),
             'softmax': nn.Softmax()
         }
 
@@ -24,8 +25,6 @@ class TorchLinearNetwork(AbstractLinearNetwork, nn.Module):
             self.__layers.add_module(name=f'hidden_layer_{i}_dropout', module=nn.Dropout(0.5))
 
         self.__layers.add_module(name='output_layer', module=nn.Linear(topology[-2], topology[-1]))
-        self.__layers.add_module(name='output_layer_act', module=self.__activations[result_activation_function])
-        self.__loss_model = nn.CrossEntropyLoss
 
     def forward(self, input_tensor: torch.Tensor) -> [torch.Tensor, np.ndarray]:
         out = input_tensor.detach().clone()
