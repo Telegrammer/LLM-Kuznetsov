@@ -13,7 +13,7 @@ if __name__ == "__main__":
     token_dim = 768
     enc_head_count = 0
     dec_head_count = 12
-    batch_size = input_sequence_length * 2
+    batch_size = input_sequence_length * 2 + 1
 
     print("creating model...")
     model = Transformer(device, (0, 12, bag_size, token_dim, input_sequence_length, batch_size),

@@ -197,6 +197,7 @@ class Transformer(AbstractLinearNetwork):
             embedding_length = self.__input_token_count
         else:
             embedding_length = self.__response_length
+
         self._layers.add_module("decoder_position_embedding_layer",
                                 PositionalEmbedding(device, (embedding_length,
                                                              topology[TransformerTopology.token_dims])))
@@ -205,6 +206,9 @@ class Transformer(AbstractLinearNetwork):
                                     Decoder((topology[TransformerTopology.token_dims], decoder_heads_count)))
         self._layers.add_module("linear_layer", nn.Linear(topology[TransformerTopology.token_dims],
                                                           topology[TransformerTopology.bag_size]))
+
+        #print(list(self._layers["decoder_embedding_layer"].parameters())[0].size())
+        # self._layers["linear_layer"].weight = self._layers["decoder_embedding_layer"].weight
 
     def forward(self, input_tensor: torch.LongTensor, target: torch.Tensor = None,
                 loss_function: typing.Callable = None) -> torch.Tensor:

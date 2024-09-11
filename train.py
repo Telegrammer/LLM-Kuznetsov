@@ -55,6 +55,13 @@ class TorchTeacher:
 
                 opt.zero_grad()
                 loss.backward()
+                #print(loss)
+                count = 0
+                for p in opt.param_groups[0]['params']:
+                    if (p.grad is None):
+                        count +=1
+                print(count)
+                exit(0)
 
                 opt.step()
 
@@ -63,7 +70,7 @@ class TorchTeacher:
 
                 true_answer += (predict == target.argmax(dim=2)).sum().item()
 
-                train_loop.set_description(f"Epoch [{epoch + 1}/{self.__epochs}], train_loss={mean_train_loss:.4f}")
+                #train_loop.set_description(f"Epoch [{epoch + 1}/{self.__epochs}], train_loss={mean_train_loss:.4f}")
 
             running_train_acc = true_answer / (len(self.__loader['train']) * self.__loader.get_batch_size())
             train_loss.append(mean_train_loss)

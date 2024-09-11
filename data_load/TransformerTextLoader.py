@@ -34,8 +34,8 @@ class TransformerTextLoader:
             train_data[i][1] = torch.eye(self.__bag_size)[train_data[i][1]]
 
         train_data, val_data = random_split(train_data, [1, 0])
-        self.__loaders = {'train': DataLoader(train_data, batch_size=4, shuffle=True),
-                          'val': DataLoader(val_data, batch_size=4, shuffle=False)}
+        self.__loaders = {'train': DataLoader(train_data, batch_size=1, shuffle=True),
+                          'val': DataLoader(val_data, batch_size=1, shuffle=False)}
 
     def __getitem__(self, loader_type: str):
         return self.__loaders[loader_type]
