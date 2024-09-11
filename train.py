@@ -57,10 +57,12 @@ class TorchTeacher:
                 loss.backward()
                 #print(loss)
                 count = 0
+                count_lol = 0
                 for p in opt.param_groups[0]['params']:
                     if (p.grad is None):
                         count +=1
-                print(count)
+                    count_lol += 1
+                print(count, count_lol)
                 exit(0)
 
                 opt.step()
