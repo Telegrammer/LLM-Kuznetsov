@@ -91,9 +91,9 @@ class DecoderTopology(enum.IntEnum):
 
 
 class Decoder(AbstractLinearNetwork):
-    def __init__(self, topology: tuple[int]):
+    def __init__(self, topology: tuple[int], decoder_only: bool = False):
         AbstractLinearNetwork.__init__(self, topology)
-
+        self.__decoder_only = decoder_only
         self._layers.add_module("masked_attention_layer",
                                 nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
                                                       self._topology[DecoderTopology.heads_count]
@@ -104,15 +104,16 @@ class Decoder(AbstractLinearNetwork):
         self._layers.add_module("masked_attention_layernorm_layer",
                                 nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
 
-        self._layers.add_module("attention_layer",
-                                nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
-                                                      self._topology[DecoderTopology.heads_count]
-                                                      - self._topology[DecoderTopology.token_dims]
-                                                      % self._topology[DecoderTopology.heads_count])
-                                )
+        if not decoder_only:
+            self._layers.add_module("attention_layer",
+                                    nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
+                                                          self._topology[DecoderTopology.heads_count]
+                                                          - self._topology[DecoderTopology.token_dims]
+                                                          % self._topology[DecoderTopology.heads_count])
+                                    )
 
-        self._layers.add_module("attention_layernorm_layer",
-                                nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
+            self._layers.add_module("attention_layernorm_layer",
+                                    nn.LayerNorm(self._topology[DecoderTopology.token_dims]))
 
         self._layers.add_module("feed_forward_layer",
                                 TorchLinearNetwork((self._topology[EncoderTopology.token_dims],
@@ -141,7 +142,7 @@ class Decoder(AbstractLinearNetwork):
         out = self._layers["masked_attention_layernorm_layer"](out)
 
         # multi head attention
-        if encoder_tensor is not None:
+        if not self.__decoder_only:
             attention_in: torch.Tensor() = out.detach().clone()
             attention_out: torch.Tensor = self._layers["attention_layer"](attention_in, encoder_tensor, encoder_tensor)
 
@@ -176,16 +177,23 @@ class Transformer(AbstractLinearNetwork):
     def __init__(self, device: str, topology: tuple[int], encoder_heads_count: int, decoder_heads_count: int):
         AbstractLinearNetwork.__init__(self, topology)
         self._layers = nn.ModuleDict()
-        self.__device = device
-        self.__response_length = topology[TransformerTopology.response_length]
-        self.__input_token_count = topology[TransformerTopology.input_token_count]
-        self._topology = topology[:TransformerTopology.token_dims]
+        self.__device: str = device
+        self.__response_length: int = topology[TransformerTopology.response_length]
+        self.__input_token_count: int = topology[TransformerTopology.input_token_count]
+        self._topology: tuple[int] = topology[:TransformerTopology.token_dims]
 
-        self._layers.add_module("encoder_embedding_layer", nn.Embedding(topology[TransformerTopology.bag_size],
-                                                                        topology[TransformerTopology.token_dims]))
-        self._layers.add_module("encoder_position_embedding_layer",
-                                PositionalEmbedding(device, (self.__input_token_count,
-                                                             topology[TransformerTopology.token_dims])))
+        is_gpt: bool = False
+        if self._topology[TransformerTopology.encoder_count] == 0:
+            embedding_length = self.__input_token_count
+            is_gpt = True
+        else:
+            embedding_length = self.__response_length
+            self._layers.add_module("encoder_embedding_layer", nn.Embedding(topology[TransformerTopology.bag_size],
+                                                                            topology[TransformerTopology.token_dims]))
+            self._layers.add_module("encoder_position_embedding_layer",
+                                    PositionalEmbedding(device, (self.__input_token_count,
+                                                                 topology[TransformerTopology.token_dims])))
+
         for i in range(topology[TransformerTopology.encoder_count]):
             self._layers.add_module(f"encoder_{i + 1}",
                                     Encoder((topology[TransformerTopology.token_dims], encoder_heads_count)))
@@ -193,22 +201,29 @@ class Transformer(AbstractLinearNetwork):
         self._layers.add_module("decoder_embedding_layer", nn.Embedding(topology[TransformerTopology.bag_size],
                                                                         topology[TransformerTopology.token_dims]))
 
-        if self._topology[TransformerTopology.encoder_count] == 0:
-            embedding_length = self.__input_token_count
-        else:
-            embedding_length = self.__response_length
-
         self._layers.add_module("decoder_position_embedding_layer",
                                 PositionalEmbedding(device, (embedding_length,
                                                              topology[TransformerTopology.token_dims])))
         for i in range(topology[TransformerTopology.decoder_count]):
             self._layers.add_module(f"decoder_{i + 1}",
-                                    Decoder((topology[TransformerTopology.token_dims], decoder_heads_count)))
+                                    Decoder((topology[TransformerTopology.token_dims], decoder_heads_count), is_gpt))
         self._layers.add_module("linear_layer", nn.Linear(topology[TransformerTopology.token_dims],
-                                                          topology[TransformerTopology.bag_size]))
+                                                          topology[TransformerTopology.bag_size], bias=False))
 
-        #print(list(self._layers["decoder_embedding_layer"].parameters())[0].size())
-        # self._layers["linear_layer"].weight = self._layers["decoder_embedding_layer"].weight
+        # print(list(self._layers["decoder_embedding_layer"].parameters())[0].size())
+        self._layers["decoder_embedding_layer"].weight = self._layers["linear_layer"].weight
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if self._topology[TransformerTopology.encoder_count] == 0:
+                std *= (2*self._topology[TransformerTopology.decoder_count]) ** -0.5
+            nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, input_tensor: torch.LongTensor, target: torch.Tensor = None,
                 loss_function: typing.Callable = None) -> torch.Tensor:
@@ -233,8 +248,8 @@ class Transformer(AbstractLinearNetwork):
             for i in range(self._topology[TransformerTopology.decoder_count]):
                 decoders_out = self._layers[f"decoder_{i + 1}"](encoders_out, decoders_out, self.__device)
 
-            logits = self._layers["linear_layer"](decoders_out[:, -1]) / 2.0
-            probabilities = nn.functional.softmax(logits)
+            logits = self._layers["linear_layer"](decoders_out[:, -1])
+            probabilities = nn.functional.softmax(logits, dim=1)
             out_idx = torch.argmax(probabilities, dim=1).unsqueeze(1)
 
             logits = logits[:, None]
@@ -244,7 +259,7 @@ class Transformer(AbstractLinearNetwork):
 
         loss = None
         if target is not None:
-            loss = loss_function(model_logits.view(-1, model_logits.size(-1)), target.view(-1, target.size(-1)))
+            loss = loss_function(model_logits.view(-1, model_logits.size(-1)), target.view(-1))
 
         return model_logits, loss
 

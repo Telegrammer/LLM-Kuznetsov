@@ -3,21 +3,21 @@ import torch.nn as nn
 from tqdm import tqdm
 
 import AbstractLinearNetwork
-from data_load import TransformerTextLoader
+from data_load import AbstractTransformerTextLoader
 
 
 class TorchTeacher:
     def __init__(self,
-                 loader: TransformerTextLoader,
+                 loader: AbstractTransformerTextLoader,
                  education_speed: float = 0.001,
                  epochs: int = 200,
                  device='cpu',
                  error_function='cross_entropy'):
 
         self.__loader = loader
-        self.__education_speed = education_speed
-        self.__epochs = epochs
-        self.__device = device
+        self.__education_speed: int = education_speed
+        self.__epochs: int = epochs
+        self.__device: str = device
         self.__loss_functions = {
             'cross_entropy': nn.CrossEntropyLoss()
         }
@@ -47,38 +47,28 @@ class TorchTeacher:
             train_loop = tqdm(self.__loader['train'], leave=False)
 
             for sample, target in train_loop:
-                sample = self.__loader.convert_sample(sample, self.__device)
-                target = self.__loader.convert_target(target, self.__device)
-                predict, loss = model(sample, target=target, loss_function=self.__loss_model)
-                predict = nn.functional.softmax(predict, dim=1)
-                predict = torch.argmax(predict, dim=2)
-
+                sample: torch.LongTensor = sample.to(self.__device)
+                target: torch.LongTensor = target.to(self.__device)
+                with torch.autocast(device_type=self.__device, dtype=torch.float16):
+                    predict, loss = model(sample, target=target, loss_function=self.__loss_model)
+                #         predict = nn.functional.softmax(predict, dim=1)
+                # predict = torch.argmax(predict, dim=2)
+                print(loss.item())
                 opt.zero_grad()
                 loss.backward()
-                #print(loss)
-                count = 0
-                count_lol = 0
-                for p in opt.param_groups[0]['params']:
-                    if (p.grad is None):
-                        count +=1
-                    count_lol += 1
-                print(count, count_lol)
-                exit(0)
-
                 opt.step()
-
+                # prof.export_chrome_trace("trace.json")
                 running_train_loss.append(loss.item())
                 mean_train_loss = sum(running_train_loss) / len(running_train_loss)
 
-                true_answer += (predict == target.argmax(dim=2)).sum().item()
+                # true_answer += (predict == target.argmax(dim=2)).sum().item()
 
-                #train_loop.set_description(f"Epoch [{epoch + 1}/{self.__epochs}], train_loss={mean_train_loss:.4f}")
+                # train_loop.set_description(f"Epoch [{epoch + 1}/{self.__epochs}], train_loss={mean_train_loss:.4f}")
 
             running_train_acc = true_answer / (len(self.__loader['train']) * self.__loader.get_batch_size())
             train_loss.append(mean_train_loss)
             train_acc.append(running_train_acc)
             print(train_acc[-1])
-
 
             # Проверка модели (валидация)
             # model.eval()
@@ -98,25 +88,25 @@ class TorchTeacher:
             #
             #         true_answer += (predict == target.argmax(dim=2)).sum().item()
 
-                #running_val_acc = true_answer / (len(self.__loader['val']) * 4)
-                #val_loss.append(mean_val_loss)
-                #val_acc.append(running_val_acc)
+            # running_val_acc = true_answer / (len(self.__loader['val']) * 4)
+            # val_loss.append(mean_val_loss)
+            # val_acc.append(running_val_acc)
 
-           # print(
-           #     f"Epoch [{epoch + 1}/{self.__epochs}], train_loss={mean_train_loss:.4f}, train_acc={running_train_acc:.4f}, "
-           #     f"val_loss={mean_val_loss:.4f}, val_acc={running_val_acc:.4f}")
+        # print(
+        #     f"Epoch [{epoch + 1}/{self.__epochs}], train_loss={mean_train_loss:.4f}, train_acc={running_train_acc:.4f}, "
+        #     f"val_loss={mean_val_loss:.4f}, val_acc={running_val_acc:.4f}")
 
-            # lr_scheduler.step(mean_val_loss)
-            # #lr_list.append(self.__education_speed)
-            #
-            # if best_loss is None:
-            #     best_loss = mean_val_loss
-            #
-            # if mean_val_loss < best_loss:
-            #     best_loss = mean_val_loss
-            #     torch.save(model.state_dict(), f"model_state_dict_epoch_{epoch + 1}.pt")
-            #     print(f"На эпохе - {epoch + 1}, сохранена модель со значением функции потерь на валидации - "
-            #           f"{mean_val_loss:.4f}, lr: {self.__education_speed}", end='\n\n')
+        # lr_scheduler.step(mean_val_loss)
+        # #lr_list.append(self.__education_speed)
+        #
+        # if best_loss is None:
+        #     best_loss = mean_val_loss
+        #
+        # if mean_val_loss < best_loss:
+        #     best_loss = mean_val_loss
+        #     torch.save(model.state_dict(), f"model_state_dict_epoch_{epoch + 1}.pt")
+        #     print(f"На эпохе - {epoch + 1}, сохранена модель со значением функции потерь на валидации - "
+        #           f"{mean_val_loss:.4f}, lr: {self.__education_speed}", end='\n\n')
 
     def get_device(self):
         return self.__device
