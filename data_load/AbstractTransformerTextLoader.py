@@ -12,8 +12,7 @@ class AbstractTransformerTextLoader:
                  batch_size: int):
         self._bag_size: int = property()
         self._batch_size: int = batch_size
-        self._loaders: dict[str, DataLoader] = self._load_data(path, tokenization_method, segmentation_method,
-                                                               sequence_length)
+        self._loaders: dict[str, DataLoader] = property()
 
     def __getitem__(self, loader_type: str):
         return self._loaders[loader_type]

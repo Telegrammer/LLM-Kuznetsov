@@ -4,7 +4,7 @@ from typing import Callable
 import tiktoken
 import torch
 
-from .AbstractTransformerTextDataset import AbstractTransformerTextDataset
+from .AbstractTransformerTextDataset import AbstractTransformerTextDataset, RawTextDataset
 
 __all__ = ["GPTTextDataset"]
 
@@ -16,6 +16,7 @@ class GPTTextDataset(AbstractTransformerTextDataset):
                  tokenization_method: str,
                  segmentation_method: str,
                  sequence_length: int):
+
         AbstractTransformerTextDataset.__init__(self)
         self._tokenization_methods: dict[str, Callable[[list[str]], list[list[int]]]] = {
             "custom": self._custom_tokenize,
@@ -30,12 +31,15 @@ class GPTTextDataset(AbstractTransformerTextDataset):
         self._len_dataset: int = 0
         self._data_list: list[torch.LongTensor] = []
 
-        with open(path, mode="r", encoding="utf-8") as file:
-            text_parts: list[str] = [part.replace("\n", " ")[:] for part in file.read().split("\n\n")]
+        print("Creating raw dataset")
+        text_parts: RawTextDataset = RawTextDataset(path)
+        print("Created")
+
         chunks: list[list[int]] = self._tokenization_methods[tokenization_method](text_parts)
 
         self._segmentation_methods[segmentation_method](chunks, sequence_length)
         self._make_dataset()
+        print("GPTTextDataset created!")
 
     @staticmethod
     def _custom_tokenize(text_parts: list[str]) -> list[list[str]]:
@@ -54,6 +58,7 @@ class GPTTextDataset(AbstractTransformerTextDataset):
 
     def _split_by_shifted_tokens(self, chunks: list[list[int]], sequence_length: int) -> None:
         tokens = list(itertools.chain(*chunks))
+        tokens = tokens[:len(tokens) - len(tokens) % sequence_length + 1]
         for i in range(0, len(tokens) - 1, sequence_length):
             self._data_list.append(torch.LongTensor(tokens[i:i + sequence_length]))
             self._data_list.append(torch.LongTensor(tokens[i + 1:i + sequence_length + 1]))

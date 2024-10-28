@@ -48,7 +48,7 @@ class Encoder(AbstractLinearNetwork):
 
         self._layers.add_module("attention_layer",
                                 nn.MultiheadAttention(self._topology[EncoderTopology.token_dims],
-                                                      self._topology[EncoderTopology.heads_count] - self._topology[
+                                                      self._topology[EncoderTopology.heads_count] + self._topology[
                                                           EncoderTopology.token_dims] % self._topology[
                                                           EncoderTopology.heads_count]))
 
@@ -108,7 +108,7 @@ class Decoder(AbstractLinearNetwork):
             self._layers.add_module("attention_layer",
                                     nn.MultiheadAttention(self._topology[DecoderTopology.token_dims],
                                                           self._topology[DecoderTopology.heads_count]
-                                                          - self._topology[DecoderTopology.token_dims]
+                                                          + self._topology[DecoderTopology.token_dims]
                                                           % self._topology[DecoderTopology.heads_count])
                                     )
 
@@ -210,7 +210,6 @@ class Transformer(AbstractLinearNetwork):
         self._layers.add_module("linear_layer", nn.Linear(topology[TransformerTopology.token_dims],
                                                           topology[TransformerTopology.bag_size], bias=False))
 
-        # print(list(self._layers["decoder_embedding_layer"].parameters())[0].size())
         self._layers["decoder_embedding_layer"].weight = self._layers["linear_layer"].weight
         self.apply(self._init_weights)
 
@@ -218,7 +217,7 @@ class Transformer(AbstractLinearNetwork):
         if isinstance(module, nn.Linear):
             std = 0.02
             if self._topology[TransformerTopology.encoder_count] == 0:
-                std *= (2*self._topology[TransformerTopology.decoder_count]) ** -0.5
+                std *= (2 * self._topology[TransformerTopology.decoder_count]) ** -0.5
             nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
@@ -237,31 +236,33 @@ class Transformer(AbstractLinearNetwork):
                 encoders_out = self._layers[f"encoder_{i + 1}"](encoders_out)
             result_string = torch.LongTensor([input_tensor[-1].item()]).to(self.__device)
 
-        model_logits = torch.Tensor().to(self.__device)
-        model_logits = model_logits.view(input_tensor.size(0), 0, self._topology[TransformerTopology.bag_size])
+        # model_logits = torch.Tensor().to(self.__device)
+        # model_logits = model_logits.view(input_tensor.size(0), 0, self._topology[TransformerTopology.bag_size])
 
-        generated_token_count = 0
+        # generated_token_count = 0
         # result_string[-1].item() != self._topology[TransformerTopology.bag_size] - 1
-        while generated_token_count != self.__response_length:
-            decoders_out: torch.Tensor = self._layers["decoder_embedding_layer"](result_string.clone())
-            decoders_out += self._layers["decoder_position_embedding_layer"](decoders_out.size(dim=1))
-            for i in range(self._topology[TransformerTopology.decoder_count]):
-                decoders_out = self._layers[f"decoder_{i + 1}"](encoders_out, decoders_out, self.__device)
+        # while generated_token_count != self.__response_length:
 
-            logits = self._layers["linear_layer"](decoders_out[:, -1])
-            probabilities = nn.functional.softmax(logits, dim=1)
-            out_idx = torch.argmax(probabilities, dim=1).unsqueeze(1)
+        decoders_out: torch.Tensor = self._layers["decoder_embedding_layer"](result_string.clone())
+        decoders_out += self._layers["decoder_position_embedding_layer"](decoders_out.size(dim=1))
+        for i in range(self._topology[TransformerTopology.decoder_count]):
+            decoders_out = self._layers[f"decoder_{i + 1}"](encoders_out, decoders_out, self.__device)
 
-            logits = logits[:, None]
-            model_logits = torch.cat((model_logits, logits), dim=1)
-            result_string = torch.cat((result_string, torch.Tensor(out_idx).to(self.__device)), dim=1).long()
-            generated_token_count += 1
+        logits = self._layers["linear_layer"](decoders_out)
+
+        # probabilities = nn.functional.softmax(logits, dim=1)
+        # out_idx = torch.argmax(probabilities, dim=1).unsqueeze(1)
+        #
+        # logits = logits[:, None]
+        # model_logits = torch.cat((model_logits, logits), dim=1)
+        # result_string = torch.cat((result_string, torch.Tensor(out_idx).to(self.__device)), dim=1).long()
+        # generated_token_count += 1
 
         loss = None
         if target is not None:
-            loss = loss_function(model_logits.view(-1, model_logits.size(-1)), target.view(-1))
+            loss = loss_function(logits.view(-1, logits.size(-1)), target.view(-1))
 
-        return model_logits, loss
+        return logits, loss
 
     def set_response_length(self, value: int):
         self.__response_length = value
@@ -271,3 +272,18 @@ class Transformer(AbstractLinearNetwork):
 
     def __repr__(self):
         return self._layers["encoder_embedding_layer"].parameters()
+
+    def configure_optimizers(self, device, weight_decay: float = 0.1, learning_rate: float = 3e-6):
+        # start with all the candidate parameters (that require grad)
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        no_decay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0},
+        ]
+        fused_available = "fused" in torch.inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and "cuda" in device
+        print("using fused AdamW:", use_fused)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        return optimizer

@@ -28,7 +28,6 @@ class TransformerTextLoader(AbstractTransformerTextLoader):
         self._bag_size = len(bag_of_words)
 
         for i in range(len(train_data)):
-            print(train_data[i])
             train_data[i][0] = torch.LongTensor([self.__word2index[word] for word in train_data[i][0]])
             train_data[i][1] = torch.LongTensor([self.__word2index[word] for word in train_data[i][1]])
 
